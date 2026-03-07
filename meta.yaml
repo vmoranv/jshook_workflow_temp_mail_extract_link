@@ -1,0 +1,4 @@
+name: temp-mail-extract-link
+description: Declarative workflow for extracting verification or activation links from a temp-mail detail page.
+author: vmoranv
+source_repo: https://github.com/vmoranv/jshook_workflow_temp_mail_extract_link
