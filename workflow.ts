@@ -1,92 +1,5 @@
-type RetryPolicy = {
-  maxAttempts: number;
-  backoffMs: number;
-  multiplier?: number;
-};
-
-type WorkflowExecutionContext = {
-  workflowRunId: string;
-  profile: string;
-  invokeTool(toolName: string, args: Record<string, unknown>): Promise<unknown>;
-  emitSpan(name: string, attrs?: Record<string, unknown>): void;
-  emitMetric(
-    name: string,
-    value: number,
-    type: 'counter' | 'gauge' | 'histogram',
-    attrs?: Record<string, unknown>,
-  ): void;
-  getConfig<T = unknown>(path: string, fallback?: T): T;
-};
-
-type ToolNode = {
-  kind: 'tool';
-  id: string;
-  toolName: string;
-  input?: Record<string, unknown>;
-  timeoutMs?: number;
-  retry?: RetryPolicy;
-};
-
-type SequenceNode = {
-  kind: 'sequence';
-  id: string;
-  steps: WorkflowNode[];
-};
-
-type BranchNode = {
-  kind: 'branch';
-  id: string;
-  predicateId: string;
-  predicateFn?: (ctx: WorkflowExecutionContext) => boolean | Promise<boolean>;
-  whenTrue: WorkflowNode;
-  whenFalse?: WorkflowNode;
-};
-
-type WorkflowNode = ToolNode | SequenceNode | BranchNode;
-
-type WorkflowContract = {
-  kind: 'workflow-contract';
-  version: 1;
-  id: string;
-  displayName: string;
-  description?: string;
-  tags?: string[];
-  timeoutMs?: number;
-  defaultMaxConcurrency?: number;
-  build(ctx: WorkflowExecutionContext): WorkflowNode;
-  onStart?(ctx: WorkflowExecutionContext): Promise<void> | void;
-  onFinish?(ctx: WorkflowExecutionContext, result: unknown): Promise<void> | void;
-  onError?(ctx: WorkflowExecutionContext, error: Error): Promise<void> | void;
-};
-
-function toolNode(
-  id: string,
-  toolName: string,
-  options?: { input?: Record<string, unknown>; retry?: RetryPolicy; timeoutMs?: number },
-): ToolNode {
-  return {
-    kind: 'tool',
-    id,
-    toolName,
-    input: options?.input,
-    retry: options?.retry,
-    timeoutMs: options?.timeoutMs,
-  };
-}
-
-function sequenceNode(id: string, steps: WorkflowNode[]): SequenceNode {
-  return { kind: 'sequence', id, steps };
-}
-
-function branchNode(
-  id: string,
-  predicateId: string,
-  whenTrue: WorkflowNode,
-  whenFalse: WorkflowNode | undefined,
-  predicateFn?: (ctx: WorkflowExecutionContext) => boolean | Promise<boolean>,
-): BranchNode {
-  return { kind: 'branch', id, predicateId, predicateFn, whenTrue, whenFalse };
-}
+import type { WorkflowContract } from '@jshookmcp/extension-sdk/workflow';
+import { toolNode, sequenceNode, branchNode } from '@jshookmcp/extension-sdk/workflow';
 
 const workflowId = 'workflow.temp-mail-extract-link.v1';
 
@@ -124,40 +37,18 @@ const workflow: WorkflowContract = {
     const openFirstMatch = ctx.getConfig<boolean>(`${prefix}.openFirstMatch`, false);
     const waitAfterOpenMs = ctx.getConfig<number>(`${prefix}.waitAfterOpenMs`, 2000);
 
-    const steps: WorkflowNode[] = [];
-
-    steps.push(
-      branchNode(
-        'maybe-navigate-detail',
-        'temp_mail_extract_link_has_detail_url',
-        toolNode('navigate-detail', 'page_navigate', {
-          input: {
-            url: detailUrl,
-            waitUntil,
-            enableNetworkMonitoring: true,
-          },
-        }),
-        toolNode('skip-navigate-detail', 'console_execute', {
-          input: {
-            expression: '({ skipped: true, step: "navigate-detail", reason: "detailUrl not provided" })',
-          },
-        }),
-        () => Boolean(detailUrl),
-      ),
-    );
-
-    steps.push(
-      toolNode('initial-wait', 'page_evaluate', {
-        input: {
-          code: `new Promise(resolve => setTimeout(() => resolve({ waitedMs: ${initialWaitMs} }), ${initialWaitMs}))`,
-        },
-        timeoutMs: Math.max(10_000, initialWaitMs + 2_000),
-      }),
-    );
-
-    steps.push(
-      toolNode('extract-links', 'page_evaluate', {
-        input: {
+    return sequenceNode('temp-mail-extract-link-root')
+      .step(branchNode('maybe-navigate-detail', 'temp_mail_extract_link_has_detail_url')
+        .predicateFn(() => Boolean(detailUrl))
+        .whenTrue(toolNode('navigate-detail', 'page_navigate').input({ url: detailUrl, waitUntil, enableNetworkMonitoring: true }))
+        .whenFalse(toolNode('skip-navigate-detail', 'console_execute').input({
+          expression: '({ skipped: true, step: "navigate-detail", reason: "detailUrl not provided" })',
+        })))
+      .step(toolNode('initial-wait', 'page_evaluate')
+        .input({ code: `new Promise(resolve => setTimeout(() => resolve({ waitedMs: ${initialWaitMs} }), ${initialWaitMs}))` })
+        .timeout(Math.max(10_000, initialWaitMs + 2_000)))
+      .step(toolNode('extract-links', 'page_evaluate')
+        .input({
           code: `(async function(){
             const settings = {
               readySelector: ${JSON.stringify(readySelector)},
@@ -186,7 +77,7 @@ const workflow: WorkflowContract = {
               const combined = (item.href + ' ' + item.text).toLowerCase();
               if (/activate|activation/.test(combined)) return 'activation';
               if (/verify|verification|confirm/.test(combined)) return 'verification';
-              if (/mail\/view/.test(combined)) return 'mail_view';
+              if (/mail\\/view/.test(combined)) return 'mail_view';
               if (/login|signin|signup|register|auth/.test(combined)) return 'auth';
               if (/privacy|terms|policy|contact|help/.test(combined)) return 'navigation';
               return 'other';
@@ -261,24 +152,13 @@ const workflow: WorkflowContract = {
                   opened = true;
                 }
                 return {
-                  success: linkData.matches.length > 0,
-                  attempt,
-                  title,
-                  href,
-                  titleBlocked,
-                  bodyBlocked,
-                  selectorReady,
-                  textReady,
-                  contextHintMatched,
+                  success: linkData.matches.length > 0, attempt, title, href,
+                  titleBlocked, bodyBlocked, selectorReady, textReady, contextHintMatched,
                   contextWarning: contextHintMatched ? null : 'current page does not look like a mail-detail context',
-                  matchedCount: linkData.matches.length,
-                  firstMatch,
-                  opened,
-                  matches: linkData.matches,
-                  fallbackLinks: linkData.fallbackLinks,
+                  matchedCount: linkData.matches.length, firstMatch, opened,
+                  matches: linkData.matches, fallbackLinks: linkData.fallbackLinks,
                   fallbackSummary: linkData.fallbackSummary,
-                  allLinksCount: linkData.allLinksCount,
-                  docsCount: linkData.docsCount,
+                  allLinksCount: linkData.allLinksCount, docsCount: linkData.docsCount,
                 };
               }
 
@@ -286,24 +166,15 @@ const workflow: WorkflowContract = {
                 await sleep(settings.retryWaitMs);
               } else {
                 return {
-                  success: false,
-                  attempt,
-                  title,
-                  href,
-                  titleBlocked,
-                  bodyBlocked,
-                  selectorReady,
-                  textReady,
-                  contextHintMatched,
+                  success: false, attempt, title, href,
+                  titleBlocked, bodyBlocked, selectorReady, textReady, contextHintMatched,
                   contextWarning: contextHintMatched ? null : 'current page does not look like a mail-detail context',
                   matchedCount: linkData.matches.length,
                   firstMatch: linkData.matches.length > 0 ? linkData.matches[0] : null,
                   opened: false,
-                  matches: linkData.matches,
-                  fallbackLinks: linkData.fallbackLinks,
+                  matches: linkData.matches, fallbackLinks: linkData.fallbackLinks,
                   fallbackSummary: linkData.fallbackSummary,
-                  allLinksCount: linkData.allLinksCount,
-                  docsCount: linkData.docsCount,
+                  allLinksCount: linkData.allLinksCount, docsCount: linkData.docsCount,
                   reason: 'ready_or_match_conditions_not_met',
                 };
               }
@@ -311,83 +182,39 @@ const workflow: WorkflowContract = {
 
             return { success: false, reason: 'unreachable' };
           })()`,
-        },
-        timeoutMs: Math.max(15_000, initialWaitMs + maxWaitAttempts * retryWaitMs + 5_000),
-      }),
-    );
-
-    steps.push(
-      branchNode(
-        'maybe-wait-after-open',
-        'temp_mail_extract_link_wait_after_open',
-        toolNode('wait-after-open', 'page_evaluate', {
-          input: {
-            code: `new Promise(resolve => setTimeout(() => resolve({ waitedMs: ${waitAfterOpenMs} }), ${waitAfterOpenMs}))`,
-          },
-          timeoutMs: Math.max(10_000, waitAfterOpenMs + 2_000),
-        }),
-        toolNode('skip-wait-after-open', 'console_execute', {
-          input: {
-            expression: '({ skipped: true, step: "wait-after-open", reason: "openFirstMatch=false" })',
-          },
-        }),
-        () => openFirstMatch,
-      ),
-    );
-
-    steps.push(
-      toolNode('emit-summary', 'console_execute', {
-        input: {
-          expression: `(${JSON.stringify({
-            workflowId,
-            detailUrl,
-            waitUntil,
-            initialWaitMs,
-            retryWaitMs,
-            maxWaitAttempts,
-            readySelector,
-            readyText,
-            titleBlocklist,
-            bodyBlocklist,
-            expectedContextHints,
-            linkSelector,
-            hrefIncludes,
-            textIncludes,
-            regexPattern,
-            regexFlags,
-            maxLinks,
-            includeFallbackLinks,
-            fallbackMaxLinks,
-            openFirstMatch,
-            waitAfterOpenMs,
-            note: 'Inspect extract-links output for matched href/text pairs, contextWarning, fallbackLinks, fallbackSummary, and docsCount.',
-          })})`,
-        },
-      }),
-    );
-
-    return sequenceNode('temp-mail-extract-link-root', steps);
+        })
+        .timeout(Math.max(15_000, initialWaitMs + maxWaitAttempts * retryWaitMs + 5_000)))
+      .step(branchNode('maybe-wait-after-open', 'temp_mail_extract_link_wait_after_open')
+        .predicateFn(() => openFirstMatch)
+        .whenTrue(toolNode('wait-after-open', 'page_evaluate')
+          .input({ code: `new Promise(resolve => setTimeout(() => resolve({ waitedMs: ${waitAfterOpenMs} }), ${waitAfterOpenMs}))` })
+          .timeout(Math.max(10_000, waitAfterOpenMs + 2_000)))
+        .whenFalse(toolNode('skip-wait-after-open', 'console_execute').input({
+          expression: '({ skipped: true, step: "wait-after-open", reason: "openFirstMatch=false" })',
+        })))
+      .step(toolNode('emit-summary', 'console_execute').input({
+        expression: `(${JSON.stringify({
+          workflowId,
+          detailUrl, waitUntil, initialWaitMs, retryWaitMs, maxWaitAttempts,
+          readySelector, readyText, titleBlocklist, bodyBlocklist, expectedContextHints,
+          linkSelector, hrefIncludes, textIncludes, regexPattern, regexFlags,
+          maxLinks, includeFallbackLinks, fallbackMaxLinks, openFirstMatch, waitAfterOpenMs,
+          note: 'Inspect extract-links output for matched href/text pairs, contextWarning, fallbackLinks, fallbackSummary, and docsCount.',
+        })})`,
+      }))
+      .build();
   },
 
   onStart(ctx) {
-    ctx.emitMetric('workflow_runs_total', 1, 'counter', {
-      workflowId,
-      stage: 'start',
-    });
+    ctx.emitMetric('workflow_runs_total', 1, 'counter', { workflowId, stage: 'start' });
   },
 
   onFinish(ctx) {
-    ctx.emitMetric('workflow_runs_total', 1, 'counter', {
-      workflowId,
-      stage: 'finish',
-    });
+    ctx.emitMetric('workflow_runs_total', 1, 'counter', { workflowId, stage: 'finish' });
   },
 
   onError(ctx, error) {
-    ctx.emitMetric('workflow_errors_total', 1, 'counter', {
-      workflowId,
-      error: error.name,
-    });
+    ctx.emitMetric('workflow_errors_total', 1, 'counter', { workflowId, error: error.name });
   },
 };
 
