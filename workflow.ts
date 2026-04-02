@@ -1,83 +1,54 @@
-import {
-  createWorkflow,
-  type WorkflowExecutionContext,
-  SequenceNodeBuilder,
-  ToolNodeBuilder,
-} from '@jshookmcp/extension-sdk/workflow';
+import type { WorkflowContract } from '@jshookmcp/extension-sdk/workflow';
+import { toolNode, sequenceNode, branchNode } from '@jshookmcp/extension-sdk/workflow';
 
 const workflowId = 'workflow.temp-mail-extract-link.v1';
 
-export default createWorkflow(workflowId, 'Temp Mail Extract Link')
-  .description(
+const workflow: WorkflowContract = {
+  kind: 'workflow-contract',
+  version: 1,
+  id: workflowId,
+  displayName: 'Temp Mail Extract Link',
+  description:
     'Navigate or reuse a temp-mail detail page, wait through redirects/challenges, scan main document and accessible iframes, classify fallback links, and optionally auto-open the first verification match.',
-  )
-  .tags(['workflow', 'mail', 'temp-mail', 'verification', 'link-extract'])
-  .timeoutMs(3 * 60_000)
-  .defaultMaxConcurrency(1)
-  .buildGraph((ctx: WorkflowExecutionContext) => {
+  tags: ['workflow', 'mail', 'temp-mail', 'verification', 'link-extract'],
+  timeoutMs: 3 * 60_000,
+  defaultMaxConcurrency: 1,
+
+  build(ctx) {
     const prefix = 'workflows.tempMailExtractLink';
-    const detailUrl = String(ctx.getConfig(`${prefix}.detailUrl`, ''));
-    const waitUntil = String(ctx.getConfig(`${prefix}.waitUntil`, 'domcontentloaded'));
-    const initialWaitMs = Number(ctx.getConfig(`${prefix}.initialWaitMs`, 1200));
-    const retryWaitMs = Number(ctx.getConfig(`${prefix}.retryWaitMs`, 1000));
-    const maxWaitAttempts = Number(ctx.getConfig(`${prefix}.maxWaitAttempts`, 5));
-    const readySelector = String(ctx.getConfig(`${prefix}.readySelector`, ''));
-    const readyText = String(ctx.getConfig(`${prefix}.readyText`, ''));
-    const titleBlocklist = ctx.getConfig<string[]>(`${prefix}.titleBlocklist`, [
-      'Redirecting',
-    ]);
-    const bodyBlocklist = ctx.getConfig<string[]>(`${prefix}.bodyBlocklist`, [
-      'Checking your browser',
-      'Just a moment',
-    ]);
-    const expectedContextHints = ctx.getConfig<string[]>(
-      `${prefix}.expectedContextHints`,
-      ['邮件', 'mail', '发件人', 'subject'],
-    );
-    const linkSelector = String(ctx.getConfig(`${prefix}.linkSelector`, 'a'));
+    const detailUrl = ctx.getConfig<string>(`${prefix}.detailUrl`, '');
+    const waitUntil = ctx.getConfig<string>(`${prefix}.waitUntil`, 'domcontentloaded');
+    const initialWaitMs = ctx.getConfig<number>(`${prefix}.initialWaitMs`, 1200);
+    const retryWaitMs = ctx.getConfig<number>(`${prefix}.retryWaitMs`, 1000);
+    const maxWaitAttempts = ctx.getConfig<number>(`${prefix}.maxWaitAttempts`, 5);
+    const readySelector = ctx.getConfig<string>(`${prefix}.readySelector`, '');
+    const readyText = ctx.getConfig<string>(`${prefix}.readyText`, '');
+    const titleBlocklist = ctx.getConfig<string[]>(`${prefix}.titleBlocklist`, ['Redirecting']);
+    const bodyBlocklist = ctx.getConfig<string[]>(`${prefix}.bodyBlocklist`, ['Checking your browser', 'Just a moment']);
+    const expectedContextHints = ctx.getConfig<string[]>(`${prefix}.expectedContextHints`, ['邮件', 'mail', '发件人', 'subject']);
+    const linkSelector = ctx.getConfig<string>(`${prefix}.linkSelector`, 'a');
     const hrefIncludes = ctx.getConfig<string[]>(`${prefix}.hrefIncludes`, []);
     const textIncludes = ctx.getConfig<string[]>(`${prefix}.textIncludes`, []);
-    const regexPattern = String(ctx.getConfig(`${prefix}.regexPattern`, ''));
-    const regexFlags = String(ctx.getConfig(`${prefix}.regexFlags`, 'i'));
-    const maxLinks = Number(ctx.getConfig(`${prefix}.maxLinks`, 20));
-    const includeFallbackLinks = Boolean(
-      ctx.getConfig(`${prefix}.includeFallbackLinks`, true),
-    );
-    const fallbackMaxLinks = Number(ctx.getConfig(`${prefix}.fallbackMaxLinks`, 20));
-    const openFirstMatch = Boolean(ctx.getConfig(`${prefix}.openFirstMatch`, false));
-    const waitAfterOpenMs = Number(ctx.getConfig(`${prefix}.waitAfterOpenMs`, 2000));
+    const regexPattern = ctx.getConfig<string>(`${prefix}.regexPattern`, '');
+    const regexFlags = ctx.getConfig<string>(`${prefix}.regexFlags`, 'i');
+    const maxLinks = ctx.getConfig<number>(`${prefix}.maxLinks`, 20);
+    const includeFallbackLinks = ctx.getConfig<boolean>(`${prefix}.includeFallbackLinks`, true);
+    const fallbackMaxLinks = ctx.getConfig<number>(`${prefix}.fallbackMaxLinks`, 20);
+    const openFirstMatch = ctx.getConfig<boolean>(`${prefix}.openFirstMatch`, false);
+    const waitAfterOpenMs = ctx.getConfig<number>(`${prefix}.waitAfterOpenMs`, 2000);
 
-    const root = new SequenceNodeBuilder('temp-mail-extract-link-root');
-
-    root
-      .branch(
-        'maybe-navigate-detail',
-        'temp_mail_extract_link_has_detail_url',
-        (b) => {
-          b.predicateFn(() => Boolean(detailUrl))
-            .whenTrue(
-              new ToolNodeBuilder('navigate-detail', 'page_navigate').input({
-                url: detailUrl,
-                waitUntil,
-                enableNetworkMonitoring: true,
-              }),
-            )
-            .whenFalse(
-              new ToolNodeBuilder('skip-navigate-detail', 'console_execute').input({
-                expression:
-                  '({ skipped: true, step: "navigate-detail", reason: "detailUrl not provided" })',
-              }),
-            );
-        },
-      )
-      .tool('initial-wait', 'page_evaluate', {
-        input: {
-          code: `new Promise(resolve => setTimeout(() => resolve({ waitedMs: ${initialWaitMs} }), ${initialWaitMs}))`,
-        },
-        timeoutMs: Math.max(10_000, initialWaitMs + 2_000),
-      })
-      .tool('extract-links', 'page_evaluate', {
-        input: {
+    return sequenceNode('temp-mail-extract-link-root')
+      .step(branchNode('maybe-navigate-detail', 'temp_mail_extract_link_has_detail_url')
+        .predicateFn(() => Boolean(detailUrl))
+        .whenTrue(toolNode('navigate-detail', 'page_navigate').input({ url: detailUrl, waitUntil, enableNetworkMonitoring: true }))
+        .whenFalse(toolNode('skip-navigate-detail', 'console_execute').input({
+          expression: '({ skipped: true, step: "navigate-detail", reason: "detailUrl not provided" })',
+        })))
+      .step(toolNode('initial-wait', 'page_evaluate')
+        .input({ code: `new Promise(resolve => setTimeout(() => resolve({ waitedMs: ${initialWaitMs} }), ${initialWaitMs}))` })
+        .timeout(Math.max(10_000, initialWaitMs + 2_000)))
+      .step(toolNode('extract-links', 'page_evaluate')
+        .input({
           code: `(async function(){
             const settings = {
               readySelector: ${JSON.stringify(readySelector)},
@@ -181,24 +152,13 @@ export default createWorkflow(workflowId, 'Temp Mail Extract Link')
                   opened = true;
                 }
                 return {
-                  success: linkData.matches.length > 0,
-                  attempt,
-                  title,
-                  href,
-                  titleBlocked,
-                  bodyBlocked,
-                  selectorReady,
-                  textReady,
-                  contextHintMatched,
+                  success: linkData.matches.length > 0, attempt, title, href,
+                  titleBlocked, bodyBlocked, selectorReady, textReady, contextHintMatched,
                   contextWarning: contextHintMatched ? null : 'current page does not look like a mail-detail context',
-                  matchedCount: linkData.matches.length,
-                  firstMatch,
-                  opened,
-                  matches: linkData.matches,
-                  fallbackLinks: linkData.fallbackLinks,
+                  matchedCount: linkData.matches.length, firstMatch, opened,
+                  matches: linkData.matches, fallbackLinks: linkData.fallbackLinks,
                   fallbackSummary: linkData.fallbackSummary,
-                  allLinksCount: linkData.allLinksCount,
-                  docsCount: linkData.docsCount,
+                  allLinksCount: linkData.allLinksCount, docsCount: linkData.docsCount,
                 };
               }
 
@@ -206,24 +166,15 @@ export default createWorkflow(workflowId, 'Temp Mail Extract Link')
                 await sleep(settings.retryWaitMs);
               } else {
                 return {
-                  success: false,
-                  attempt,
-                  title,
-                  href,
-                  titleBlocked,
-                  bodyBlocked,
-                  selectorReady,
-                  textReady,
-                  contextHintMatched,
+                  success: false, attempt, title, href,
+                  titleBlocked, bodyBlocked, selectorReady, textReady, contextHintMatched,
                   contextWarning: contextHintMatched ? null : 'current page does not look like a mail-detail context',
                   matchedCount: linkData.matches.length,
                   firstMatch: linkData.matches.length > 0 ? linkData.matches[0] : null,
                   opened: false,
-                  matches: linkData.matches,
-                  fallbackLinks: linkData.fallbackLinks,
+                  matches: linkData.matches, fallbackLinks: linkData.fallbackLinks,
                   fallbackSummary: linkData.fallbackSummary,
-                  allLinksCount: linkData.allLinksCount,
-                  docsCount: linkData.docsCount,
+                  allLinksCount: linkData.allLinksCount, docsCount: linkData.docsCount,
                   reason: 'ready_or_match_conditions_not_met',
                 };
               }
@@ -231,79 +182,40 @@ export default createWorkflow(workflowId, 'Temp Mail Extract Link')
 
             return { success: false, reason: 'unreachable' };
           })()`,
-        },
-        timeoutMs: Math.max(
-          15_000,
-          initialWaitMs + maxWaitAttempts * retryWaitMs + 5_000,
-        ),
-      })
-      .branch(
-        'maybe-wait-after-open',
-        'temp_mail_extract_link_wait_after_open',
-        (b) => {
-          b.predicateFn(() => openFirstMatch)
-            .whenTrue(
-              new ToolNodeBuilder('wait-after-open', 'page_evaluate')
-                .input({
-                  code: `new Promise(resolve => setTimeout(() => resolve({ waitedMs: ${waitAfterOpenMs} }), ${waitAfterOpenMs}))`,
-                })
-                .timeout(Math.max(10_000, waitAfterOpenMs + 2_000)),
-            )
-            .whenFalse(
-              new ToolNodeBuilder('skip-wait-after-open', 'console_execute').input({
-                expression:
-                  '({ skipped: true, step: "wait-after-open", reason: "openFirstMatch=false" })',
-              }),
-            );
-        },
-      )
-      .tool('emit-summary', 'console_execute', {
-        input: {
-          expression: `(${JSON.stringify({
-            workflowId,
-            detailUrl,
-            waitUntil,
-            initialWaitMs,
-            retryWaitMs,
-            maxWaitAttempts,
-            readySelector,
-            readyText,
-            titleBlocklist,
-            bodyBlocklist,
-            expectedContextHints,
-            linkSelector,
-            hrefIncludes,
-            textIncludes,
-            regexPattern,
-            regexFlags,
-            maxLinks,
-            includeFallbackLinks,
-            fallbackMaxLinks,
-            openFirstMatch,
-            waitAfterOpenMs,
-            note: 'Inspect extract-links output for matched href/text pairs, contextWarning, fallbackLinks, fallbackSummary, and docsCount.',
-          })})`,
-        },
-      });
+        })
+        .timeout(Math.max(15_000, initialWaitMs + maxWaitAttempts * retryWaitMs + 5_000)))
+      .step(branchNode('maybe-wait-after-open', 'temp_mail_extract_link_wait_after_open')
+        .predicateFn(() => openFirstMatch)
+        .whenTrue(toolNode('wait-after-open', 'page_evaluate')
+          .input({ code: `new Promise(resolve => setTimeout(() => resolve({ waitedMs: ${waitAfterOpenMs} }), ${waitAfterOpenMs}))` })
+          .timeout(Math.max(10_000, waitAfterOpenMs + 2_000)))
+        .whenFalse(toolNode('skip-wait-after-open', 'console_execute').input({
+          expression: '({ skipped: true, step: "wait-after-open", reason: "openFirstMatch=false" })',
+        })))
+      .step(toolNode('emit-summary', 'console_execute').input({
+        expression: `(${JSON.stringify({
+          workflowId,
+          detailUrl, waitUntil, initialWaitMs, retryWaitMs, maxWaitAttempts,
+          readySelector, readyText, titleBlocklist, bodyBlocklist, expectedContextHints,
+          linkSelector, hrefIncludes, textIncludes, regexPattern, regexFlags,
+          maxLinks, includeFallbackLinks, fallbackMaxLinks, openFirstMatch, waitAfterOpenMs,
+          note: 'Inspect extract-links output for matched href/text pairs, contextWarning, fallbackLinks, fallbackSummary, and docsCount.',
+        })})`,
+      }))
+      .build();
+  },
 
-    return root;
-  })
-  .onStart((ctx) => {
-    ctx.emitMetric('workflow_runs_total', 1, 'counter', {
-      workflowId,
-      stage: 'start',
-    });
-  })
-  .onFinish((ctx) => {
-    ctx.emitMetric('workflow_runs_total', 1, 'counter', {
-      workflowId,
-      stage: 'finish',
-    });
-  })
-  .onError((ctx, error) => {
-    ctx.emitMetric('workflow_errors_total', 1, 'counter', {
-      workflowId,
-      error: error.name,
-    });
-  })
-  .build();
+  onStart(ctx) {
+    ctx.emitMetric('workflow_runs_total', 1, 'counter', { workflowId, stage: 'start' });
+  },
+
+  onFinish(ctx) {
+    ctx.emitMetric('workflow_runs_total', 1, 'counter', { workflowId, stage: 'finish' });
+  },
+
+  onError(ctx, error) {
+    ctx.emitMetric('workflow_errors_total', 1, 'counter', { workflowId, error: error.name });
+  },
+};
+
+export default workflow;
